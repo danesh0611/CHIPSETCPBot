@@ -1,0 +1,11 @@
+[project]
+name = "python-template"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+requires-python = ">=3.11"
+dependencies = [
+    "discord-py>=2.6.4",
+    "gspread>=6.2.1",
+    "oauth2client>=4.1.3",
+]
