@@ -10,9 +10,9 @@ from pathlib import Path
 
 # ================== CONFIG ==================
 
-TOKEN = os.getenv("TOKEN")  # only TOKEN stays in env
+TOKEN = os.getenv("TOKEN")
 
-VM_PUBLIC_IP = "52.172.194.26"   # <-- YOUR VM PUBLIC IP
+VM_PUBLIC_IP = "52.172.194.26"   # your VM public IP
 IMAGE_BASE_URL = f"http://{VM_PUBLIC_IP}:8080"
 
 IMAGE_DIR = Path("/home/Chakradhar/cpbot_images")
@@ -56,8 +56,7 @@ def load_registered_users():
         ws.append_row(["Discord Username"])
         return
 
-    for u in ws.col_values(1)[1:]:
-        registered_users.add(u)
+    registered_users.update(ws.col_values(1)[1:])
 
 def get_today_sheet():
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -104,8 +103,7 @@ async def register(ctx):
         return await ctx.reply("Already registered 🤝")
 
     registered_users.add(uname)
-    ws = sheet.worksheet("Registered_Users")
-    ws.append_row([uname])
+    sheet.worksheet("Registered_Users").append_row([uname])
 
     await ctx.reply("✅ Registered successfully!")
 
@@ -164,8 +162,7 @@ async def notcompleted(ctx):
     if not pending:
         return await ctx.reply("🎉 Everyone submitted!")
 
-    msg = "\n".join(f"• {u}" for u in pending)
-    await ctx.reply(f"❌ Not submitted today:\n\n{msg}")
+    await ctx.reply("❌ Not submitted today:\n\n" + "\n".join(f"• {u}" for u in pending))
 
 @bot.command()
 async def summarize(ctx):
@@ -185,12 +182,17 @@ async def summarize(ctx):
     day_sheets = [ws for ws in sheet.worksheets() if is_valid_date(ws.title)]
     total_days = len(day_sheets)
 
+    # 🔥 FIX: read each sheet ONCE
+    submissions_per_day = [
+        set(ws.col_values(2)[1:]) for ws in day_sheets
+    ]
+
     for user in registered_users:
-        days = sum(1 for ws in day_sheets if user in ws.col_values(2))
+        days = sum(1 for day in submissions_per_day if user in day)
         percent = (days / total_days * 100) if total_days else 0
         sws.append_row([user, days, total_days, f"{percent:.1f}%"])
 
-    await ctx.reply("📊 Summary generated")
+    await ctx.reply("📊 Summary generated successfully")
 
 # ================== REMINDER ==================
 
