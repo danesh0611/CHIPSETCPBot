@@ -4,14 +4,14 @@ import os
 import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 import json
 import requests
-import tempfile
+import uuid
+import io
 
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-# ------------------ GOOGLE SHEETS ------------------
+# ---------- Google Sheets Setup ----------
 SHEET_ID = "1qPoJ0uBdVCQZMZYWRS6Bt60YjJnYUkD4OePSTRMiSrI"
 
 scope = [
@@ -19,122 +19,217 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
+# Google Sheets credentials
 google_creds_json = os.getenv("GOOGLE_CREDS")
 
 if google_creds_json:
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(
-        json.loads(google_creds_json), scope
-    )
+    google_creds = json.loads(google_creds_json)
+    sheets_creds = ServiceAccountCredentials.from_json_keyfile_dict(google_creds, scope)
 else:
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "service_account.json", scope
-    )
+    sheets_creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 
-client = gspread.authorize(creds)
+client = gspread.authorize(sheets_creds)
 sheet = client.open_by_key(SHEET_ID)
 
-# ------------------ GOOGLE DRIVE ------------------
-drive_service = build("drive", "v3", credentials=creds)
-DRIVE_FOLDER_ID = "1_5_PPNN9YLOOC00Z-Wg1uhmDKfcglN5G"
+# ---------- Google Drive Setup for Image Storage ----------
+# Separate credentials for Drive (can be same or different from Sheets)
+drive_creds_json = os.getenv("DRIVE_CREDS")
 
-def upload_image_to_drive(url, filename):
-    r = requests.get(url)
-    r.raise_for_status()
+if drive_creds_json:
+    drive_creds_dict = json.loads(drive_creds_json)
+    drive_creds = ServiceAccountCredentials.from_json_keyfile_dict(drive_creds_dict, scope)
+else:
+    # Try to load from drive_service_account.json, fallback to service_account.json
+    try:
+        drive_creds = ServiceAccountCredentials.from_json_keyfile_name("drive_service_account.json", scope)
+    except FileNotFoundError:
+        print("drive_service_account.json not found, using service_account.json for Drive")
+        drive_creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
 
-    temp = tempfile.NamedTemporaryFile(delete=False)
-    temp.write(r.content)
-    temp.close()
+drive_service = build('drive', 'v3', credentials=drive_creds)
 
-    media = MediaFileUpload(temp.name, resumable=True)
-    file = drive_service.files().create(
-        body={"name": filename, "parents": [DRIVE_FOLDER_ID]},
-        media_body=media,
-        fields="id"
-    ).execute()
+# Create or get the folder for bot images
+def get_or_create_drive_folder():
+    """Get or create a folder in Google Drive for storing images"""
+    folder_name = "ChipsetBot_Images"
+    
+    # Search for existing folder
+    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    folders = results.get('files', [])
+    
+    if folders:
+        return folders[0]['id']
+    
+    # Create new folder if it doesn't exist
+    file_metadata = {
+        'name': folder_name,
+        'mimeType': 'application/vnd.google-apps.folder'
+    }
+    folder = drive_service.files().create(body=file_metadata, fields='id').execute()
+    print(f"Created new folder: {folder_name}")
+    return folder.get('id')
 
-    drive_service.permissions().create(
-        fileId=file["id"],
-        body={"type": "anyone", "role": "reader"}
-    ).execute()
+DRIVE_FOLDER_ID = None  # Will be set on bot startup
 
-    os.unlink(temp.name)
-    return f"https://drive.google.com/file/d/{file['id']}/view"
+def upload_to_drive(attachment_url):
+    """Download image from Discord and upload to Google Drive"""
+    try:
+        # Download the image from Discord
+        response = requests.get(attachment_url, stream=True)
+        response.raise_for_status()
+        
+        # Get file extension
+        file_extension = attachment_url.split('.')[-1].split('?')[0]
+        if file_extension not in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
+            file_extension = 'png'
+        
+        # Generate unique filename
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        
+        # Determine MIME type
+        mime_types = {
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'webp': 'image/webp'
+        }
+        mime_type = mime_types.get(file_extension, 'image/png')
+        
+        # Upload to Google Drive
+        file_metadata = {
+            'name': unique_filename,
+            'parents': [DRIVE_FOLDER_ID]
+        }
+        
+        media = MediaIoBaseUpload(
+            io.BytesIO(response.content),
+            mimetype=mime_type,
+            resumable=True
+        )
+        
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink, webContentLink'
+        ).execute()
+        
+        file_id = file.get('id')
+        
+        # Make the file publicly accessible
+        drive_service.permissions().create(
+            fileId=file_id,
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+        
+        # Return direct link to image
+        return f"https://drive.google.com/uc?export=view&id={file_id}"
+        
+    except Exception as e:
+        print(f"Error uploading to Drive: {e}")
+        return None
 
-# ------------------ BOT STATE ------------------
-registered_users = {}        # {discord_username: real_name}
-submissions_today = {}       # {discord_username: count}
+registered_users = {}  # {discord_username: real_name}
+submissions_today = {}  # {discord_username: count}
 
-# ------------------ BOT SETUP ------------------
+def is_valid_day_sheet(title):
+    try:
+        datetime.datetime.strptime(title, "%Y-%m-%d")
+        return True
+    except:
+        return False
+
+def load_users():
+    try:
+        reg_sheet = sheet.worksheet("Registered_Users")
+    except:
+        reg_sheet = sheet.add_worksheet(title="Registered_Users", rows=200, cols=2)
+        reg_sheet.append_row(["Discord Username", "Real Name"])
+        return
+    
+    rows = reg_sheet.get_all_values()[1:]
+    for row in rows:
+        if len(row) >= 2:
+            registered_users[row[0]] = row[1]
+
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 def get_today_sheet():
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     try:
-        return sheet.worksheet(today)
+        ws = sheet.worksheet(today)
     except:
         ws = sheet.add_worksheet(title=today, rows=200, cols=4)
-        ws.append_row(["Date", "Username", "Screenshot Link", "Problem Name"])
-        return ws
+        ws.append_row(["Date", "Username", "Screenshot", "Problem Name"])
+    return ws
 
-def load_users():
-    try:
-        reg = sheet.worksheet("Registered_Users")
-    except:
-        reg = sheet.add_worksheet("Registered_Users", 200, 2)
-        reg.append_row(["Discord Username", "Real Name"])
-        return
-
-    for r in reg.get_all_values()[1:]:
-        registered_users[r[0]] = r[1]
 
 @bot.event
 async def on_ready():
+    global DRIVE_FOLDER_ID
     load_users()
-    print(f"Bot online ✔ {bot.user}")
+    
+    # Initialize Google Drive folder
+    DRIVE_FOLDER_ID = get_or_create_drive_folder()
+    
+    print(f"Bot Ready ✔: {bot.user}")
+    print(f"Google Drive folder ready for image storage")
     daily_reminder.start()
 
-# ------------------ REGISTER ------------------
+
+# ---------- Register ----------
 @bot.command()
 async def register(ctx):
-    if ctx.guild:
-        return await ctx.reply("📩 DM me to register")
+    if ctx.guild is not None:
+        return await ctx.reply("📩 DM me to register!")
 
     uname = ctx.author.name
+
     if uname in registered_users:
         return await ctx.reply("Already registered 🤝")
 
-    await ctx.reply("Send your **FULL REAL NAME**")
+    await ctx.reply("Send your REAL FULL NAME 👇")
 
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
-    msg = await bot.wait_for("message", timeout=60, check=check)
-    real_name = msg.content.strip()
+    try:
+        msg = await bot.wait_for("message", timeout=60, check=check)
+        real_name = msg.content.strip()
+        registered_users[uname] = real_name
 
-    registered_users[uname] = real_name
-    sheet.worksheet("Registered_Users").append_row([uname, real_name])
+        reg_sheet = sheet.worksheet("Registered_Users")
+        reg_sheet.append_row([uname, real_name])
+        await ctx.reply(f"✔ Registered Successfully {real_name} 🎯")
 
-    await ctx.reply(f"✅ Registered: {real_name}")
+    except:
+        await ctx.reply("⏳ Timeout! Try /register again.")
 
-# ------------------ SUBMIT ------------------
+
+# ---------- Submit ----------
 @bot.command()
 async def submit(ctx, *, problem_name="No Name"):
-    if ctx.guild:
-        return await ctx.reply("Submit in DM only 😄")
+    if ctx.guild is not None:
+        return await ctx.reply("Submit privately here 😄")
 
     uname = ctx.author.name
+
     if uname not in registered_users:
-        return await ctx.reply("❌ Register first")
+        return await ctx.reply("❌ Register first using `/register`")
 
     if not ctx.message.attachments:
-        return await ctx.reply("⚠️ Attach screenshot")
+        return await ctx.reply("⚠️ Attach screenshot also!")
 
-    await ctx.reply("📤 Uploading...")
-
-    attachment = ctx.message.attachments[0]
-    filename = f"{uname}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    drive_link = upload_image_to_drive(attachment.url, filename)
+    # Upload image to Google Drive
+    await ctx.reply("📥 Uploading your image to Google Drive...")
+    
+    attachment_url = ctx.message.attachments[0].url
+    permanent_url = upload_to_drive(attachment_url)
+    
+    if not permanent_url:
+        return await ctx.reply("❌ Failed to upload image. Try again!")
 
     submissions_today[uname] = submissions_today.get(uname, 0) + 1
 
@@ -142,65 +237,58 @@ async def submit(ctx, *, problem_name="No Name"):
     ws.append_row([
         str(datetime.datetime.now().date()),
         uname,
-        drive_link,
+        permanent_url,  # Permanent Google Drive URL
         problem_name
     ])
 
-    await ctx.reply("✅ Submission saved (permanent link)")
+    await ctx.reply(f"🔥 Submission #{submissions_today[uname]} saved to Google Drive!")
 
-# ------------------ STATUS ------------------
+
+# ---------- Status ----------
 @bot.command()
 async def status(ctx):
-    if ctx.guild:
-        return await ctx.reply("DM me")
+    if ctx.guild is not None:
+        return await ctx.reply("DM me 😄")
 
-    count = submissions_today.get(ctx.author.name, 0)
-    await ctx.reply(f"🔥 Submissions today: {count}")
+    uname = ctx.author.name
+    count = submissions_today.get(uname, 0)
 
-# ------------------ NOT COMPLETED ------------------
+    if count > 0:
+        await ctx.reply(f"✔ You submitted {count} time(s) today! 🔥")
+    else:
+        await ctx.reply("❌ No submissions yet today 😬")
+
+
+# ---------- Not Completed Today (Admin Only) ----------
 @bot.command()
 async def notcompleted(ctx):
-    if not ctx.guild or not ctx.author.guild_permissions.administrator:
-        return await ctx.reply("Admin only")
+    if ctx.guild is None:
+        return await ctx.reply("Use this in server 😄")
+
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.reply("❌ Admin only!")
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    ws = sheet.worksheet(today)
 
-    submitted = set(ws.col_values(2)[1:])
-    pending = [
-        real for uname, real in registered_users.items()
-        if uname not in submitted
+    try:
+        today_ws = sheet.worksheet(today)
+    except:
+        return await ctx.reply("⚠️ Nobody submitted today 😅")
+
+    submitted = set(today_ws.col_values(2)[1:])
+    not_done = [
+        registered_users[u] for u in registered_users
+        if u not in submitted
     ]
 
-    if not pending:
-        return await ctx.reply("🎉 Everyone submitted!")
+    if not not_done:
+        return await ctx.reply("🎉 Everyone completed today!")
 
-    await ctx.reply("❌ Not submitted:\n" + "\n".join(pending))
+    result = "\n".join(f"• {name}" for name in not_done)
+    await ctx.reply(f"❌ Pending Submissions:\n\n{result}")
 
-# ------------------ SUMMARY ------------------
-@bot.command()
-async def summarize(ctx):
-    if not ctx.guild or not ctx.author.guild_permissions.administrator:
-        return await ctx.reply("Admin only")
 
-    title = f"Summary-{datetime.datetime.now().strftime('%B-%Y')}"
-    try:
-        return sheet.worksheet(title)
-    except:
-        sws = sheet.add_worksheet(title, 200, 4)
-        sws.append_row(["Real Name", "Days Submitted", "Total Days", "Consistency %"])
-
-    days = [w for w in sheet.worksheets() if len(w.title) == 10]
-    total = len(days)
-
-    for uname, real in registered_users.items():
-        count = sum(1 for d in days if uname in d.col_values(2))
-        percent = (count / total * 100) if total else 0
-        sws.append_row([real, count, total, f"{percent:.1f}%"])
-
-    await ctx.reply("📊 Summary created")
-
-# ------------------ REMINDER ------------------
+# ---------- Daily DM Reminder ----------
 @tasks.loop(time=datetime.time(hour=22, minute=0))
 async def daily_reminder():
     for uname in registered_users:
@@ -208,9 +296,11 @@ async def daily_reminder():
             user = discord.utils.get(bot.users, name=uname)
             if user:
                 try:
-                    await user.send("⏲️ Submit today's CP")
+                    await user.send("⏲️ Reminder: Submit today's CP!")
                 except:
                     pass
     submissions_today.clear()
 
-bot.run(os.getenv("TOKEN"))
+
+TOKEN = os.getenv("TOKEN")
+bot.run(TOKEN)
