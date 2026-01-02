@@ -1,5 +1,6 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -22,6 +23,18 @@ bot_sheet = client.open_by_key(BOT_SHEET_ID)
 
 rows = form_ws.get_all_records()
 
+# 🔒 DATE NORMALIZATION (VERY IMPORTANT)
+def normalize_date(date_str):
+    """
+    Convert any incoming date to DD-MM-YYYY
+    """
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(date_str, fmt).strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    raise ValueError(f"Invalid date format: {date_str}")
+
 def get_day_sheet(date_str):
     try:
         return bot_sheet.worksheet(date_str)
@@ -33,11 +46,16 @@ def get_day_sheet(date_str):
 for row in rows:
     name = row.get("NAME")
     problem = row.get("PROBLEM NAME")
-    date = row.get("DATE OF SUBMISSION")
+    raw_date = row.get("DATE OF SUBMISSION")
     screenshot = row.get("SCREENSHOT")
 
-    if not date or not name:
+    if not raw_date or not name:
         continue
+
+    try:
+        date = normalize_date(raw_date)
+    except:
+        continue  # skip bad date rows safely
 
     day_ws = get_day_sheet(date)
 
