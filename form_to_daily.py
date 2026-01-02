@@ -11,40 +11,38 @@ creds = ServiceAccountCredentials.from_json_keyfile_name(
 )
 client = gspread.authorize(creds)
 
-# 🔴 SAME spreadsheet (form responses + daily sheets)
-sheet = client.open("YOUR_SPREADSHEET_NAME")
+# 🟢 FORM RESPONSE SHEET
+FORM_SHEET_ID = "1u7BWSXLXzDMaUCjuglw1MxPCHNoAGsDtlBG99k9_Plg"
+form_sheet = client.open_by_key(FORM_SHEET_ID)
+form_ws = form_sheet.worksheet("Form Responses 1")
 
-form_ws = sheet.worksheet("Form_Responses")
+# 🔵 DISCORD BOT MASTER SHEET
+BOT_SHEET_ID = "1qPoJ0uBdVCQZMZYWRS6Bt60YjJnYUkD4OePSTRMiSrI"
+bot_sheet = client.open_by_key(BOT_SHEET_ID)
 
 rows = form_ws.get_all_records()
 
 def get_day_sheet(date_str):
     try:
-        return sheet.worksheet(date_str)
+        return bot_sheet.worksheet(date_str)
     except:
-        ws = sheet.add_worksheet(date_str, rows=300, cols=4)
+        ws = bot_sheet.add_worksheet(date_str, rows=300, cols=4)
         ws.append_row(["Date", "Username", "Screenshot", "Problem"])
         return ws
 
 for row in rows:
-    name = row["NAME"]
-    problem = row["PROBLEM NAME"]
-    date = row["DATE OF SUBMISSION"]
-    screenshot = row["SCREENSHOT"]
+    name = row.get("NAME")
+    problem = row.get("PROBLEM NAME")
+    date = row.get("DATE OF SUBMISSION")
+    screenshot = row.get("SCREENSHOT")
 
-    if not date:
+    if not date or not name:
         continue
 
     day_ws = get_day_sheet(date)
 
-    # 🔒 DUPLICATE CHECK
     existing = day_ws.get_all_values()
-    already_exists = any(
-        r[1] == name and r[3] == problem
-        for r in existing[1:]
-    )
-
-    if already_exists:
+    if any(r[1] == name and r[3] == problem for r in existing[1:]):
         continue
 
     day_ws.append_row([
@@ -54,4 +52,4 @@ for row in rows:
         problem
     ])
 
-print("✅ Form data synced to daily sheets")
+print("✅ Google Form → Discord Bot sheet sync DONE")
