@@ -1,6 +1,6 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, date
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -12,7 +12,7 @@ creds = ServiceAccountCredentials.from_json_keyfile_name(
 )
 client = gspread.authorize(creds)
 
-# 🟢 FORM RESPONSE SHEET
+# 🟢 GOOGLE FORM RESPONSE SHEET
 FORM_SHEET_ID = "1u7BWSXLXzDMaUCjuglw1MxPCHNoAGsDtlBG99k9_Plg"
 form_sheet = client.open_by_key(FORM_SHEET_ID)
 form_ws = form_sheet.worksheet("Form Responses 1")
@@ -23,9 +23,23 @@ bot_sheet = client.open_by_key(BOT_SHEET_ID)
 
 rows = form_ws.get_all_records()
 
-# 🔒 EXACT conversion: YYYY-MM-DD → DD-MM-YYYY
-def normalize_date(date_str):
-    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d-%m-%Y")
+print("📥 Total form rows found:", len(rows))  # DEBUG (keep it)
+
+# 🔒 DATE NORMALIZATION (FINAL + SAFE)
+def normalize_date(raw_date):
+    """
+    Google Forms date can be:
+    - datetime.date
+    - string YYYY-MM-DD
+    Convert everything to DD-MM-YYYY
+    """
+    if isinstance(raw_date, date):
+        return raw_date.strftime("%d-%m-%Y")
+
+    if isinstance(raw_date, str):
+        return datetime.strptime(raw_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+    raise ValueError("Unsupported date format")
 
 def get_day_sheet(date_str):
     try:
@@ -45,18 +59,19 @@ for row in rows:
         continue
 
     try:
-        date = normalize_date(raw_date)
-    except ValueError:
-        continue  # skip bad rows safely
+        date_str = normalize_date(raw_date)
+    except Exception as e:
+        print("⚠️ Skipping row due to date error:", raw_date)
+        continue
 
-    day_ws = get_day_sheet(date)
+    day_ws = get_day_sheet(date_str)
 
     existing = day_ws.get_all_values()
     if any(r[1] == name and r[3] == problem for r in existing[1:]):
         continue
 
     day_ws.append_row([
-        date,
+        date_str,
         name,
         screenshot,
         problem
