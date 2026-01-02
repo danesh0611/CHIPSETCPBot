@@ -28,7 +28,7 @@ print("📥 Total form rows found:", len(rows))  # DEBUG (keep it)
 # 🔒 DATE NORMALIZATION (FINAL + SAFE)
 from datetime import datetime, date
 
-def normalize_date(raw_date):
+
 def normalize_date(raw_date):
     """
     Convert Google Form date into YYYY-MM-DD
@@ -84,5 +84,6 @@ for row in rows:
     ])
 
 print("✅ Google Form → Discord Bot sheet sync DONE")
+
 
 
