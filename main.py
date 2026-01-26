@@ -213,6 +213,51 @@ async def status(ctx, date: str | None = None):
     else:
         return await ctx.reply(f"❌ No submissions on **{label}**.")
 
+@bot.command()
+async def delete(ctx, date: str | None = None):
+    if ctx.guild:
+        return await ctx.reply("DM me")
+    
+    uname = ctx.author.name
+    
+    if date is None:
+        target_date = today_str()
+    else:
+        if not is_valid_date(date):
+            return await ctx.reply("❌ Please use date in **YYYY-MM-DD** format.")
+        if not is_date_within_last_3_days(date):
+            return await ctx.reply("❌ You can delete submissions only for **today or last 3 days**.")
+        target_date = date
+
+    try:
+        ws=sheet.worksheet(target_date)
+    except:
+        return await ctx.reply(f"❌ No submissions recorded for **{target_date}**.")
+    rows = ws.get_all_values()
+    if len(rows) <= 1:
+        return await ctx.reply(f"❌ No submissions on **{target_date}**.")
+    
+    user_rows = []
+    for row_idx, row in enumerate(rows[1:], 2):  
+        if row[1] == uname:  
+            user_rows.append(row_idx)
+
+    if not user_rows:
+        label = "today" if target_date == today_str() else target_date
+        return await ctx.reply(f"❌ No submissions for you on **{label}**.")
+    
+    row_to_delete = user_rows[-1]
+    ws.delete_rows(row_to_delete)
+
+    if target_date == today_str():
+        submissions_today[uname] = max(0, submissions_today.get(uname, 1) - 1)
+
+    if target_date == today_str():
+        label = "today"
+    else:
+        label = target_date
+    await ctx.reply(f"✅ Deleted your submission from **{label}**.")
+
 
 @bot.command()
 async def notcompleted(ctx):
