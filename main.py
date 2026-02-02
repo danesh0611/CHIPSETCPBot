@@ -218,6 +218,9 @@ async def submit(ctx, *, args=""):
         if not is_date_within_last_3_days(date_str):
             return await ctx.reply("❌ Allowed only **today or last 3 days**")
 
+    if date_str in paused_dates:
+        return await ctx.reply(f"⏸️ Submissions paused for **{date_str}**")
+
     await ctx.reply("📤 Saving image…")
 
     image_url = save_image_locally(ctx.message.attachments[0].url)
