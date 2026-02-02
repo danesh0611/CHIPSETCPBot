@@ -22,6 +22,8 @@ IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 SHEET_ID = "1qPoJ0uBdVCQZMZYWRS6Bt60YjJnYUkD4OePSTRMiSrI"
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
 
+ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID", 1446465532441395372))
+
 IST = pytz.timezone("Asia/Kolkata")
 
 # ================== GOOGLE SHEETS ==================
@@ -123,6 +125,33 @@ def count_submissions_between(start_date, end_date):
         current += datetime.timedelta(days=1)
     return counts
 
+
+def last_four_day_range():
+    today = datetime.datetime.now(IST).date()
+    start = today - datetime.timedelta(days=4)
+    end = today - datetime.timedelta(days=1)
+    return start, end
+
+
+def get_announcement_channel():
+    """Best-effort lookup for a text channel to post announcements."""
+    if ANNOUNCE_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+            if channel and channel.permissions_for(channel.guild.me).send_messages:
+                return channel
+        except:
+            pass
+
+    for guild in bot.guilds:
+        me = guild.me or guild.get_member(bot.user.id)
+        if not me:
+            continue
+        for channel in guild.text_channels:
+            if channel.permissions_for(me).send_messages:
+                return channel
+    return None
+
 # ================== EVENTS ==================
 
 @bot.event
@@ -134,6 +163,8 @@ async def on_ready():
         weekly_reminder.start()
     if not monthly_target_check.is_running():
         monthly_target_check.start()
+    if not inactive_reminder.is_running():
+        inactive_reminder.start()
     print(f"✅ Bot online: {bot.user}")
 
 # ================== COMMANDS ==================
@@ -374,6 +405,22 @@ async def weeksummarize(ctx, date_str):
     await ctx.reply(f"📊 Weekly summary created ({start} → {end})")
 
 
+@bot.command()
+async def inactive(ctx):
+    if not ctx.guild or not ctx.author.guild_permissions.administrator:
+        return await ctx.reply("Admin only")
+
+    start, end = last_four_day_range()
+    counts = count_submissions_between(start, end)
+    inactive_users = [registered_users[u] for u, total in counts.items() if total == 0]
+
+    if not inactive_users:
+        return
+
+    msg = "\n".join(f"• {name}" for name in inactive_users)
+    await ctx.send(f"Inactive last 4 days:\n{msg}")
+
+
 
 # ================== REMINDER ==================
 
@@ -425,15 +472,36 @@ async def monthly_target_check():
     month_label = last_month_start.strftime("%B %Y")
 
     for uname, total in counts.items():
-        if total <= 14:
+        if total < 14:
             user = discord.utils.get(bot.users, name=uname)
             if user:
                 try:
                     await user.send(
-                        f"🗓️ Monthly target alert: {total} submissions in {month_label}. Please aim for 15+ to hit the target."
+                        f"🗓️ Monthly target alert: {total} submissions in {month_label}. Please aim for 14+ to hit the target."
                     )
                 except:
                     pass
+
+
+@tasks.loop(time=datetime.time(hour=21, minute=45, tzinfo=IST))
+async def inactive_reminder():
+    today = datetime.datetime.now(IST).date()
+    if today.toordinal() % 4 != 0:  # Every 4th day
+        return
+
+    channel = get_announcement_channel()
+    if not channel:
+        return
+
+    start, end = last_four_day_range()
+    counts = count_submissions_between(start, end)
+    inactive_users = [registered_users[u] for u, total in counts.items() if total == 0]
+
+    if not inactive_users:
+        return
+
+    msg = "\n".join(f"• {name}" for name in inactive_users)
+    await channel.send(f"Inactive last 4 days ({start} to {end}):\n{msg}")
 
 # ================== RUN ==================
 
