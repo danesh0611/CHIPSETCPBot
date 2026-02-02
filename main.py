@@ -84,6 +84,36 @@ def load_registered_users():
         if len(row) >= 2:
             registered_users[row[0]] = row[1]
 
+
+def load_submissions_today():
+    """Preload today's submission counts so reminders don't ping submitters after restart."""
+    date_str = today_str()
+    try:
+        ws = sheet.worksheet(date_str)
+    except:
+        return
+
+    submitted = ws.col_values(2)[1:]
+    for uname in submitted:
+        submissions_today[uname] = submissions_today.get(uname, 0) + 1
+
+
+def get_paused_ws():
+    try:
+        ws = sheet.worksheet("Paused_Dates")
+    except:
+        ws = sheet.add_worksheet("Paused_Dates", rows=200, cols=1)
+        ws.append_row(["Date"])
+    return ws
+
+
+def load_paused_dates():
+    ws = get_paused_ws()
+    dates = ws.col_values(1)[1:]
+    for d in dates:
+        if d:
+            paused_dates.add(d.strip())
+
 def get_sheet_for_date(date_str):
     try:
         ws = sheet.worksheet(date_str)
@@ -161,6 +191,8 @@ def get_announcement_channel():
 @bot.event
 async def on_ready():
     load_registered_users()
+    load_paused_dates()
+    load_submissions_today()
     if not daily_reminder.is_running():
         daily_reminder.start()
     if not weekly_reminder.is_running():
@@ -353,7 +385,12 @@ async def pause(ctx, date: str | None = None):
     if not is_valid_date(target_date):
         return await ctx.reply("❌ Please use date in **YYYY-MM-DD** format.")
 
+    if target_date in paused_dates:
+        return await ctx.reply(f"ℹ️ Already paused for **{target_date}**")
+
+    ws = get_paused_ws()
     paused_dates.add(target_date)
+    ws.append_row([target_date])
     await ctx.reply(f"⏸️ Submissions paused for **{target_date}** (ignored in reminders and targets)")
 
 
@@ -368,6 +405,12 @@ async def unpause(ctx, date: str | None = None):
 
     if target_date in paused_dates:
         paused_dates.remove(target_date)
+        ws = get_paused_ws()
+        rows = ws.col_values(1)
+        for idx, val in enumerate(rows, start=1):
+            if val == target_date:
+                ws.delete_rows(idx)
+                break
         await ctx.reply(f"▶️ Submissions unpaused for **{target_date}**")
     else:
         await ctx.reply(f"ℹ️ No pause set for **{target_date}**")
@@ -387,7 +430,20 @@ async def summarize(ctx):
         sws = sheet.add_worksheet(title, rows=200, cols=4)
         sws.append_row(["Real Name", "Days Submitted", "Total Days", "Consistency %"])
 
-    day_sheets = [ws for ws in sheet.worksheets() if is_valid_date(ws.title)]
+    current_year = now.year
+    current_month = now.month
+
+    day_sheets = []
+    for ws in sheet.worksheets():
+        if not is_valid_date(ws.title):
+            continue
+        try:
+            d = datetime.datetime.strptime(ws.title, "%Y-%m-%d").date()
+        except:
+            continue
+        if d.year == current_year and d.month == current_month:
+            day_sheets.append(ws)
+
     total_days = len(day_sheets)
 
     submissions_per_day = [
