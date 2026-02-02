@@ -43,6 +43,7 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 
 registered_users = {}      # {username: real_name}
 submissions_today = {}     # {username: count}
+paused_dates = set()       # {"YYYY-MM-DD"}
 
 # ================== HELPERS ==================
 def get_week_range(date_str):
@@ -114,6 +115,9 @@ def count_submissions_between(start_date, end_date):
     current = start_date
     while current <= end_date:
         date_str = current.strftime("%Y-%m-%d")
+        if date_str in paused_dates:
+            current += datetime.timedelta(days=1)
+            continue
         try:
             ws = sheet.worksheet(date_str)
             submitted = ws.col_values(2)[1:]
@@ -336,6 +340,35 @@ async def notcompleted(ctx):
     msg = "\n".join(f"• {name}" for name in pending)
     await ctx.reply(f"❌ Not submitted today:\n\n{msg}")
 
+
+@bot.command()
+async def pause(ctx, date: str | None = None):
+    if not ctx.guild or not ctx.author.guild_permissions.administrator:
+        return await ctx.reply("Admin only")
+
+    target_date = today_str() if date is None else date
+    if not is_valid_date(target_date):
+        return await ctx.reply("❌ Please use date in **YYYY-MM-DD** format.")
+
+    paused_dates.add(target_date)
+    await ctx.reply(f"⏸️ Submissions paused for **{target_date}** (ignored in reminders and targets)")
+
+
+@bot.command()
+async def unpause(ctx, date: str | None = None):
+    if not ctx.guild or not ctx.author.guild_permissions.administrator:
+        return await ctx.reply("Admin only")
+
+    target_date = today_str() if date is None else date
+    if not is_valid_date(target_date):
+        return await ctx.reply("❌ Please use date in **YYYY-MM-DD** format.")
+
+    if target_date in paused_dates:
+        paused_dates.remove(target_date)
+        await ctx.reply(f"▶️ Submissions unpaused for **{target_date}**")
+    else:
+        await ctx.reply(f"ℹ️ No pause set for **{target_date}**")
+
 @bot.command()
 async def summarize(ctx):
     if not ctx.guild or not ctx.author.guild_permissions.administrator:
@@ -426,6 +459,9 @@ async def inactive(ctx):
 
 @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=IST))
 async def daily_reminder():
+    if today_str() in paused_dates:
+        submissions_today.clear()
+        return
     for uname in registered_users:
         if uname not in submissions_today:
             user = discord.utils.get(bot.users, name=uname)
