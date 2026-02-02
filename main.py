@@ -114,6 +114,20 @@ def load_paused_dates():
         if d:
             paused_dates.add(d.strip())
 
+
+def is_paused_date(date_str: str) -> bool:
+    if date_str in paused_dates:
+        return True
+    try:
+        ws = get_paused_ws()
+        rows = set(v.strip() for v in ws.col_values(1)[1:] if v)
+        if date_str in rows:
+            paused_dates.add(date_str)
+            return True
+    except:
+        pass
+    return False
+
 def get_sheet_for_date(date_str):
     try:
         ws = sheet.worksheet(date_str)
@@ -250,7 +264,7 @@ async def submit(ctx, *, args=""):
         if not is_date_within_last_3_days(date_str):
             return await ctx.reply("❌ Allowed only **today or last 3 days**")
 
-    if date_str in paused_dates:
+    if is_paused_date(date_str):
         return await ctx.reply(f"⏸️ Submissions paused for **{date_str}**")
 
     await ctx.reply("📤 Saving image…")
@@ -518,7 +532,7 @@ async def inactive(ctx):
 
 @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=IST))
 async def daily_reminder():
-    if today_str() in paused_dates:
+    if is_paused_date(today_str()):
         submissions_today.clear()
         return
     for uname in registered_users:
