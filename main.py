@@ -105,6 +105,24 @@ def save_image_locally(discord_url):
 
     return f"{IMAGE_BASE_URL}/{filename}"
 
+
+def count_submissions_between(start_date, end_date):
+    """Count submissions per user between two dates (inclusive)."""
+    counts = {u: 0 for u in registered_users}
+    current = start_date
+    while current <= end_date:
+        date_str = current.strftime("%Y-%m-%d")
+        try:
+            ws = sheet.worksheet(date_str)
+            submitted = ws.col_values(2)[1:]
+            for uname in submitted:
+                if uname in counts:
+                    counts[uname] += 1
+        except:
+            pass
+        current += datetime.timedelta(days=1)
+    return counts
+
 # ================== EVENTS ==================
 
 @bot.event
@@ -112,6 +130,10 @@ async def on_ready():
     load_registered_users()
     if not daily_reminder.is_running():
         daily_reminder.start()
+    if not weekly_reminder.is_running():
+        weekly_reminder.start()
+    if not monthly_target_check.is_running():
+        monthly_target_check.start()
     print(f"✅ Bot online: {bot.user}")
 
 # ================== COMMANDS ==================
@@ -366,6 +388,52 @@ async def daily_reminder():
                 except:
                     pass
     submissions_today.clear()
+
+
+@tasks.loop(time=datetime.time(hour=21, minute=15, tzinfo=IST))
+async def weekly_reminder():
+    now = datetime.datetime.now(IST)
+    if now.weekday() != 6:  # Run only on Sundays
+        return
+
+    week_end = now.date()
+    week_start = week_end - datetime.timedelta(days=6)
+    counts = count_submissions_between(week_start, week_end)
+
+    for uname, total in counts.items():
+        if total < 3:
+            user = discord.utils.get(bot.users, name=uname)
+            if user:
+                try:
+                    await user.send(
+                        f"📅 Weekly reminder: {total} submissions from {week_start} to {week_end}. Target is 3+."
+                    )
+                except:
+                    pass
+
+
+@tasks.loop(time=datetime.time(hour=21, minute=30, tzinfo=IST))
+async def monthly_target_check():
+    now = datetime.datetime.now(IST)
+    if now.day != 1:  # Run on the first day of the month for the previous month
+        return
+
+    last_month_end = now.date() - datetime.timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+
+    counts = count_submissions_between(last_month_start, last_month_end)
+    month_label = last_month_start.strftime("%B %Y")
+
+    for uname, total in counts.items():
+        if total <= 14:
+            user = discord.utils.get(bot.users, name=uname)
+            if user:
+                try:
+                    await user.send(
+                        f"🗓️ Monthly target alert: {total} submissions in {month_label}. Please aim for 15+ to hit the target."
+                    )
+                except:
+                    pass
 
 # ================== RUN ==================
 
